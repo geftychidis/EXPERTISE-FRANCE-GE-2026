@@ -47,6 +47,82 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ─── SEARCH ─── */
+.search-wrapper {
+  position: relative;
+  margin-top: 12px;
+  max-width: 700px;
+  margin-left: auto; margin-right: auto;
+}
+.search-box {
+  display: flex; align-items: center;
+  background: rgba(255,255,255,.12);
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 10px; padding: 0 14px;
+  transition: background .2s, border-color .2s;
+}
+.search-box:focus-within {
+  background: rgba(255,255,255,.18);
+  border-color: rgba(255,255,255,.35);
+}
+.search-icon { font-size: 15px; margin-right: 8px; opacity: .6; }
+.search-input {
+  flex: 1; background: none; border: none; outline: none;
+  color: #fff; font-size: 14px; font-family: inherit;
+  padding: 10px 0;
+}
+.search-input::placeholder { color: rgba(255,255,255,.4); }
+.search-clear {
+  background: none; border: none; color: rgba(255,255,255,.5);
+  cursor: pointer; font-size: 14px; padding: 4px 6px;
+  border-radius: 4px; transition: color .15s;
+}
+.search-clear:hover { color: #fff; }
+.search-results {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+  background: #fff; border-radius: var(--radius-lg);
+  box-shadow: 0 20px 40px rgba(0,0,0,.2), 0 0 0 1px rgba(0,0,0,.06);
+  max-height: 70vh; overflow-y: auto; z-index: 5000;
+  display: none;
+}
+.search-results.visible { display: block; }
+.search-results::-webkit-scrollbar { width: 6px; }
+.search-results::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+.search-header {
+  padding: 12px 18px 8px; font-size: .78rem; color: var(--gray-500);
+  border-bottom: 1px solid var(--gray-100);
+  position: sticky; top: 0; background: #fff; z-index: 1;
+}
+.search-result-item {
+  padding: 12px 18px; cursor: pointer;
+  border-bottom: 1px solid var(--gray-100);
+  transition: background .12s;
+}
+.search-result-item:last-child { border-bottom: none; }
+.search-result-item:hover { background: var(--blue-ghost); }
+.search-result-num {
+  display: inline-block; background: var(--navy); color: #fff;
+  font-size: .7rem; font-weight: 700; padding: 2px 8px;
+  border-radius: 4px; margin-right: 8px; vertical-align: middle;
+}
+.search-result-title {
+  font-weight: 600; font-size: .88rem; color: var(--navy);
+  display: inline; vertical-align: middle;
+}
+.search-result-excerpt {
+  font-size: .8rem; color: var(--gray-600); margin-top: 4px;
+  line-height: 1.5; display: -webkit-box;
+  -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.search-result-excerpt mark {
+  background: #fef08a; color: var(--gray-800);
+  padding: 0 1px; border-radius: 2px;
+}
+.search-empty {
+  padding: 24px 18px; text-align: center;
+  color: var(--gray-400); font-size: .88rem;
+}
+
 /* ─── ARTICLE INDEX ─── */
 .art-index-section { margin-bottom: 16px; }
 .art-index-header {
@@ -653,6 +729,15 @@ body {
       <button class="tab-btn" data-tab="comments"><span class="tab-icon">◇</span>Σχόλια Διαβούλευσης</button>
       <button class="tab-btn" data-tab="index"><span class="tab-icon">☰</span>Ευρετήριο Άρθρων</button>
     </nav>
+    <!-- Search bar -->
+    <div class="search-wrapper">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="articleSearch" class="search-input" placeholder="Αναζήτηση στα άρθρα… π.χ. «προδιαγεγραμμένη καύση», «εθελοντές», «ΣμηΕΑ»">
+        <button class="search-clear" id="searchClear" style="display:none;">✕</button>
+      </div>
+      <div class="search-results" id="searchResults"></div>
+    </div>
   </div>
 </header>
 
@@ -7308,6 +7393,149 @@ Object.entries(indexParts).forEach(([containerId, nums]) => {
     item.addEventListener('click', () => openArticleModal([num]));
     container.appendChild(item);
   });
+});
+// ─── ARTICLE SEARCH ───
+const searchInput = document.getElementById('articleSearch');
+const searchResults = document.getElementById('searchResults');
+const searchClear = document.getElementById('searchClear');
+let searchDebounce;
+
+function normalizeGreek(s) {
+  // Remove accents for matching
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function getExcerpt(text, terms, contextLen = 100) {
+  const norm = normalizeGreek(text);
+  let bestPos = -1;
+  let bestTerm = '';
+  for (const t of terms) {
+    const pos = norm.indexOf(t);
+    if (pos !== -1 && (bestPos === -1 || pos < bestPos)) {
+      bestPos = pos;
+      bestTerm = t;
+    }
+  }
+  if (bestPos === -1) return '';
+  const start = Math.max(0, bestPos - contextLen);
+  const end = Math.min(text.length, bestPos + bestTerm.length + contextLen);
+  let excerpt = (start > 0 ? '…' : '') + text.substring(start, end) + (end < text.length ? '…' : '');
+  return excerpt;
+}
+
+function highlightTerms(text, terms) {
+  if (!terms.length) return text;
+  // Escape HTML
+  let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Highlight each term
+  for (const term of terms) {
+    const re = new RegExp('(' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    html = html.replace(re, '<mark>$1</mark>');
+  }
+  return html;
+}
+
+function performSearch(query) {
+  if (!query || query.length < 2) {
+    searchResults.classList.remove('visible');
+    searchClear.style.display = 'none';
+    return;
+  }
+  searchClear.style.display = '';
+
+  const terms = normalizeGreek(query).split(/\s+/).filter(t => t.length >= 2);
+  if (!terms.length) { searchResults.classList.remove('visible'); return; }
+
+  const results = [];
+  for (let num = 1; num <= 135; num++) {
+    const art = articleTexts[num];
+    if (!art) continue;
+    const normTitle = normalizeGreek(art.title);
+    const normBody = normalizeGreek(art.body);
+    
+    // Score: how many terms match and where
+    let score = 0;
+    let matched = true;
+    for (const t of terms) {
+      const inTitle = normTitle.includes(t);
+      const inBody = normBody.includes(t);
+      if (!inTitle && !inBody) { matched = false; break; }
+      if (inTitle) score += 10;
+      if (inBody) score += 1;
+    }
+    if (!matched) continue;
+
+    // Get excerpt from body
+    const excerpt = getExcerpt(art.body, terms);
+    results.push({ num, title: art.title, excerpt, score });
+  }
+
+  // Sort by score desc
+  results.sort((a, b) => b.score - a.score);
+
+  // Render
+  if (results.length === 0) {
+    searchResults.innerHTML = `<div class="search-empty">Δεν βρέθηκαν αποτελέσματα για «${query.replace(/</g,'&lt;')}»</div>`;
+  } else {
+    // Get original query words for highlighting
+    const origTerms = query.split(/\s+/).filter(t => t.length >= 2);
+    let html = `<div class="search-header">${results.length} άρθρ${results.length === 1 ? 'ο' : 'α'} για «${query.replace(/</g,'&lt;')}»</div>`;
+    results.forEach(r => {
+      const highlightedExcerpt = highlightTerms(r.excerpt, origTerms);
+      html += `<div class="search-result-item" data-artnum="${r.num}">
+        <span class="search-result-num">${r.num}</span>
+        <span class="search-result-title">${r.title}</span>
+        <div class="search-result-excerpt">${highlightedExcerpt}</div>
+      </div>`;
+    });
+    searchResults.innerHTML = html;
+
+    // Attach click events
+    searchResults.querySelectorAll('.search-result-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const num = parseInt(item.dataset.artnum);
+        searchResults.classList.remove('visible');
+        openArticleModal([num]);
+      });
+    });
+  }
+  searchResults.classList.add('visible');
+}
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => performSearch(searchInput.value.trim()), 250);
+});
+
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    searchInput.value = '';
+    searchResults.classList.remove('visible');
+    searchClear.style.display = 'none';
+    searchInput.blur();
+  }
+  if (e.key === 'Enter') {
+    clearTimeout(searchDebounce);
+    performSearch(searchInput.value.trim());
+  }
+});
+
+searchClear.addEventListener('click', () => {
+  searchInput.value = '';
+  searchResults.classList.remove('visible');
+  searchClear.style.display = 'none';
+  searchInput.focus();
+});
+
+// Close results when clicking outside
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-wrapper')) {
+    searchResults.classList.remove('visible');
+  }
+});
+// Re-show results if input has value and gets focus
+searchInput.addEventListener('focus', () => {
+  if (searchInput.value.trim().length >= 2) performSearch(searchInput.value.trim());
 });
 </script>
 </body>
